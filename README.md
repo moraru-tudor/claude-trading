@@ -65,6 +65,42 @@ Phantom itself has no API that lets a program approve trades for you. A bot eith
 - `MAX_POSITION_USD`, `MAX_OPEN_POSITIONS`, `SLIPPAGE_BPS`, `MAX_PRIORITY_FEE_LAMPORTS`, and a 5% price-impact refusal in live mode.
 - State lives in `data/state-<mode>.json`. Restarting resumes the session; set `RESET=1` to start a new one.
 
+## Run it inside the Claude app (desktop)
+
+The desk screen also exists as a page inside Claude (`claude-app/desk.html`, published as a Claude artifact). Pages inside Claude run in a locked-down frame that can't reach the market or Phantom. They can, however, reach a **local connector** on your computer through the Claude desktop app. So the setup is:
+
+```
+Phantom bot account key ──▶ bot on your computer (npm run paper / live) ──▶ Solana
+   (stays in .env)                     ▲  local HTTP
+                                       │
+             trading-desk connector (src/mcp.ts, started by the Claude desktop app)
+                                       ▲
+                     desk page inside the Claude desktop app
+```
+
+1. Start the bot: `npm run paper` (or `npm run live`). Leave it running.
+2. Open the Claude desktop app → Settings → Developer → Edit Config, and add this to `claude_desktop_config.json` (use your real folder path):
+   ```json
+   {
+     "mcpServers": {
+       "trading-desk": {
+         "command": "npx",
+         "args": ["-y", "tsx", "/full/path/to/claude-trading/src/mcp.ts"],
+         "env": { "DESK_URL": "http://127.0.0.1:8787", "DASHBOARD_TOKEN": "" }
+       }
+     }
+   }
+   ```
+   On Windows use a path like `C:\\Users\\you\\claude-trading\\src\\mcp.ts`. If you set `DASHBOARD_TOKEN` in `.env`, put the same value here.
+3. Restart the Claude desktop app, open the desk page, and choose **Allow** for `trading-desk`.
+
+The page shows live equity, the 5 agents, open positions and the decision stream, and has Pause / Resume / Close all buttons. You can also just ask Claude in a chat: "how is my trading desk doing?" or "pause the desk".
+
+Notes:
+- **You never paste your private key into Claude.** It only lives in `.env` on your computer. The connector and the page never see it.
+- Only the Claude **desktop** app can reach local connectors. The phone app and claude.ai in a browser show a "connect" screen instead.
+- The bot keeps trading when Claude is closed. Claude is the window and remote control, not the engine.
+
 ## Running it 24/7
 
 The Claude app can't keep a process running overnight. Run the desk on a computer that stays on, or on a small VPS (`npm run paper` under `pm2`/`systemd`), and open the dashboard from your phone.
@@ -78,6 +114,8 @@ src/
   agents/             scanner · safety · analyst (Claude) · risk · executor
   sources/            dexscreener · rugcheck · jupiter · real market · sim (demo)
   server.ts           dashboard + SSE stream + control endpoints
+  mcp.ts              trading-desk connector for the Claude desktop app
+claude-app/desk.html  the desk page published inside Claude
 public/index.html     the phone dashboard
 test/risk.test.ts     stop/TP/trailing/sizing/limits tests  (npm test)
 ```
