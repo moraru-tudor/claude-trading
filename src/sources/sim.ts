@@ -105,5 +105,32 @@ export class SimMarket implements Market {
     };
   }
 
+  private tickTimers = new Map<string, NodeJS.Timeout>();
+  private ticks = 0;
+  private lastTickAt = 0;
+
+  async priceTick(mints: string[]) {
+    countCall("dexscreener");
+    const out = new Map<string, { price: number; snap?: TokenSnapshot }>();
+    for (const id of mints) { const t = this.tokens.get(id); if (t) { this.step(t); out.set(id, { price: t.snap.priceUsd, snap: { ...t.snap } }); } }
+    return out;
+  }
+
+  /** Simulated swaps: each held coin "trades" every 0.2-1.5 s. */
+  syncTicks(pools: { mint: string; pair?: string }[], onTick: (mint: string) => void) {
+    const want = new Set(pools.map((p) => p.mint));
+    for (const [m, timer] of this.tickTimers) if (!want.has(m)) { clearTimeout(timer); this.tickTimers.delete(m); }
+    for (const m of want) {
+      if (this.tickTimers.has(m)) continue;
+      const fire = () => {
+        this.ticks++; this.lastTickAt = Date.now(); onTick(m);
+        this.tickTimers.set(m, setTimeout(fire, rand(200, 1500)));
+      };
+      this.tickTimers.set(m, setTimeout(fire, rand(200, 1500)));
+    }
+  }
+
+  tickStats() { return { ticks: this.ticks, lastTickAt: this.lastTickAt, streams: this.tickTimers.size, error: "" }; }
+
   async solPriceUsd() { this.sol *= Math.exp(0.0005 * gauss()); return this.sol; }
 }

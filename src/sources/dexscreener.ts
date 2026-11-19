@@ -1,4 +1,5 @@
 import { fetchJson, sanitizeLabel } from "../util.js";
+import { limit } from "../ratelimit.js";
 import { countCall } from "./market.js";
 import type { TokenSnapshot } from "../types.js";
 
@@ -20,6 +21,7 @@ interface Pair {
 }
 
 export async function latestSolanaMints(): Promise<string[]> {
+  await Promise.all([limit("dex-latest"), limit("dex-latest")]);
   const [profiles, boosts] = await Promise.all([
     fetchJson<Profile[]>(`${BASE}/token-profiles/latest/v1`).catch(() => [] as Profile[]),
     fetchJson<Profile[]>(`${BASE}/token-boosts/latest/v1`).catch(() => [] as Profile[]),
@@ -35,7 +37,8 @@ export async function tokenSnapshots(mints: string[]): Promise<Map<string, Token
   const out = new Map<string, TokenSnapshot>();
   for (let i = 0; i < mints.length; i += 30) {
     const chunk = mints.slice(i, i + 30);
-    const pairs = await fetchJson<Pair[]>(`${BASE}/tokens/v1/solana/${chunk.join(",")}`);
+    await limit("dex-tokens");
+    const pairs = await fetchJson<Pair[]>(`${BASE}/tokens/v1/solana/${chunk.join(",")}`, {}, 5_000);
     countCall("dexscreener");
     for (const p of pairs ?? []) {
       const mint = p.baseToken?.address;
@@ -51,6 +54,7 @@ export async function tokenSnapshots(mints: string[]): Promise<Map<string, Token
 
 export async function solPriceUsd(): Promise<number> {
   const SOL = "So11111111111111111111111111111111111111112";
+  await limit("dex-tokens");
   const pairs = await fetchJson<Pair[]>(`${BASE}/tokens/v1/solana/${SOL}`);
   countCall("dexscreener");
   const usdPairs = (pairs ?? []).filter((p) => p.baseToken.address === SOL && ["USDC", "USDT"].includes(p.quoteToken.symbol));

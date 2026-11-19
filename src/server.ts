@@ -14,7 +14,7 @@ export function startServer(desk: Desk) {
     for (const c of clients) c.write(msg);
   };
   desk.on("toast", (t) => send("toast", t));
-  setInterval(() => clients.size && send("state", desk.snapshot()), 1000).unref();
+  setInterval(() => clients.size && send("state", desk.snapshot()), 500).unref();
 
   const authed = (req: http.IncomingMessage) => {
     if (!config.dashboardToken) return true;

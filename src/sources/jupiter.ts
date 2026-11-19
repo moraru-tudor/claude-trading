@@ -1,5 +1,6 @@
 import { config } from "../config.js";
 import { fetchJson } from "../util.js";
+import { limit } from "../ratelimit.js";
 import { countCall } from "./market.js";
 
 export const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -21,12 +22,14 @@ export async function quote(inputMint: string, outputMint: string, amount: bigin
   u.searchParams.set("amount", amount.toString());
   u.searchParams.set("slippageBps", String(slippageBps));
   u.searchParams.set("restrictIntermediateTokens", "true");
+  await limit("jupiter");
   countCall("jupiter");
   return fetchJson<Quote>(u.toString(), { headers: headers() });
 }
 
 /** Returns a base64 serialized VersionedTransaction for the user to sign. */
 export async function buildSwap(q: Quote, userPublicKey: string): Promise<string> {
+  await limit("jupiter");
   countCall("jupiter");
   const res = await fetchJson<{ swapTransaction: string }>(`${config.jupiterBase}/swap`, {
     method: "POST",
@@ -58,4 +61,18 @@ export async function roundTrip(mint: string, lamports = 50_000_000n): Promise<{
   } catch {
     return { sellable: false, lossPct: null };
   }
+}
+
+/** Jupiter Price API v3: aggregated USD price, up to 50 mints per call. */
+export async function prices(mints: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const base = config.jupiterBase.replace(/\/swap\/v1\/?$/, "");
+  for (let i = 0; i < mints.length; i += 50) {
+    await limit("jupiter");
+    countCall("jupiter");
+    const res = await fetchJson<Record<string, { usdPrice?: number } | null>>(
+      `${base}/price/v3?ids=${mints.slice(i, i + 50).join(",")}`, { headers: headers() }, 5_000);
+    for (const [mint, v] of Object.entries(res ?? {})) if (v && Number(v.usdPrice) > 0) out.set(mint, Number(v.usdPrice));
+  }
+  return out;
 }

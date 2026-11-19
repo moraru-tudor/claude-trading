@@ -160,7 +160,7 @@ export class Desk extends EventEmitter {
         id: uid(), mint: t.mint, symbol: t.symbol, icon: t.icon, entryPrice: fill.price, qty: fill.qty,
         rawAmount: fill.rawAmount, decimals: fill.decimals, costUsd: fill.usd, openedAt: Date.now(),
         highPrice: fill.price, lastPrice: t.priceUsd, takeProfitPct: v.takeProfitPct, stopPct: r.stopPct,
-        marketCap: t.marketCap, liquidityUsd: t.liquidityUsd,
+        marketCap: t.marketCap, liquidityUsd: t.liquidityUsd, pairAddress: t.pairAddress, lastPriceAt: Date.now(),
       };
       this.s.positions.push(pos);
       this.s.cashUsd -= fill.usd;
@@ -182,27 +182,73 @@ export class Desk extends EventEmitter {
   }
 
   // ───────────────────────── exit monitor ─────────────────────────
+  // Runs every MONITOR_INTERVAL_MS (default 1 s) and, with the tick stream on, right after every swap
+  // in a held coin's pool. Only one check runs at a time; a check requested meanwhile runs right after.
+  private checking = false;
+  private recheck = false;
+  private lastTickCheck = 0;
+  private closing = new Set<string>();
+  private lastSnapAt = 0;
+  checks = 0;
+  private checkLog: number[] = [];
+  lastCheckMs = 0;
+  lastCheckAt = 0;
+
   async monitorOnce() {
-    if (!this.s.positions.length) return this.sampleEquity();
-    try {
-      const snaps = await this.market.snapshots(this.s.positions.map((p) => p.mint));
-      for (const p of [...this.s.positions]) {
-        const t = snaps.get(p.mint);
-        if (t) {
-          p.lastPrice = t.priceUsd; p.highPrice = Math.max(p.highPrice, t.priceUsd);
-          p.marketCap = t.marketCap; p.liquidityUsd = t.liquidityUsd;
-          this.ticker.set(p.mint, t);
-        }
-        const why = exitSignal(p, p.lastPrice);
-        if (why) await this.close(p, t, why);
-      }
-    } catch (e) {
-      console.error("[monitor]", (e as Error).message);
-    }
+    this.market.syncTicks(this.s.positions.map((p) => ({ mint: p.mint, pair: p.pairAddress })), (m) => this.onTick(m));
+    await this.checkPositions();
     this.sampleEquity();
   }
 
+  private onTick(_mint: string) {
+    const now = Date.now();
+    if (now - this.lastTickCheck < config.tickDebounceMs) return;
+    this.lastTickCheck = now;
+    void this.checkPositions();
+  }
+
+  private async checkPositions(): Promise<void> {
+    if (!this.s.positions.length) return;
+    if (this.checking) { this.recheck = true; return; }
+    this.checking = true;
+    const t0 = Date.now();
+    try {
+      const px = await this.market.priceTick(this.s.positions.map((p) => p.mint));
+      const now = Date.now();
+      this.checks++; this.checkLog.push(now);
+      this.lastCheckMs = now - t0; this.lastCheckAt = now;
+      for (const p of [...this.s.positions]) {
+        const q = px.get(p.mint);
+        if (q && q.price > 0) {
+          p.lastPrice = q.price; p.lastPriceAt = now; p.highPrice = Math.max(p.highPrice, q.price);
+          if (q.snap) { p.marketCap = q.snap.marketCap; p.liquidityUsd = q.snap.liquidityUsd; this.ticker.set(p.mint, q.snap); }
+        }
+        const why = exitSignal(p, p.lastPrice);
+        if (why && !this.closing.has(p.id)) void this.close(p, q?.snap, why);
+      }
+      // with a price-only source, refresh liquidity / mcap every 15 s for slippage and display
+      if (config.priceSource === "jupiter" && now - this.lastSnapAt > 15_000) {
+        this.lastSnapAt = now;
+        const snaps = await this.market.snapshots(this.s.positions.map((p) => p.mint)).catch(() => new Map<string, TokenSnapshot>());
+        for (const p of this.s.positions) { const t = snaps.get(p.mint); if (t) { p.marketCap = t.marketCap; p.liquidityUsd = t.liquidityUsd; this.ticker.set(p.mint, t); } }
+      }
+    } catch (e) {
+      console.error("[monitor]", (e as Error).message);
+    } finally {
+      this.checking = false;
+      if (this.recheck) { this.recheck = false; setTimeout(() => void this.checkPositions(), 0); }
+    }
+  }
+
+  checksPerMin() {
+    const cut = Date.now() - 60_000;
+    while (this.checkLog.length && this.checkLog[0] < cut) this.checkLog.shift();
+    return this.checkLog.length;
+  }
+
   async close(p: Position, t: TokenSnapshot | undefined, why: string) {
+    if (this.closing.has(p.id)) return;
+    this.closing.add(p.id);
     try {
       const fill = await this.exec.sell(p, t, this.solPx || (await this.market.solPriceUsd()));
       const pnl = fill.usd - p.costUsd;
@@ -217,6 +263,8 @@ export class Desk extends EventEmitter {
     } catch (e) {
       this.setAgent("executor", { text: `SELL $${p.symbol} failed, retrying`, ok: false });
       console.error("[close]", (e as Error).message);
+    } finally {
+      this.closing.delete(p.id);
     }
   }
 
@@ -228,7 +276,7 @@ export class Desk extends EventEmitter {
   private sampleEquity() {
     const v = this.equity();
     const last = this.s.equity.at(-1);
-    if (!last || Date.now() - last.t > 30_000 || Math.abs(v - this.lastEquity) > 0.01 * v) {
+    if (!last || Date.now() - last.t > 5_000 || Math.abs(v - this.lastEquity) > 0.01 * v) {
       this.s.equity.push({ t: Date.now(), v });
       if (this.s.equity.length > 4000) this.s.equity.splice(0, this.s.equity.length - 4000);
       this.lastEquity = v;
@@ -257,6 +305,14 @@ export class Desk extends EventEmitter {
       positions: this.s.positions,
       decisions: this.s.decisions.slice(0, 40),
       ticker: [...this.ticker.values()].slice(-16).map((t) => ({ symbol: t.symbol, icon: t.icon, chg: t.chgH1 })),
+      speed: (() => {
+        const tk = this.market.tickStats();
+        return {
+          checkEveryMs: config.monitorIntervalMs, checksPerMin: this.checksPerMin(), lastCheckMs: this.lastCheckMs, lastCheckAt: this.lastCheckAt,
+          scanEverySec: config.scanIntervalSec, priceSource: config.priceSource,
+          tickStream: config.tickStream, ticks: tk.ticks, lastTickAt: tk.lastTickAt, streams: tk.streams, tickError: tk.error,
+        };
+      })(),
       config: { stopLossPct: config.stopLossPct, maxPositionPct: config.maxPositionPct, sessionHours: config.sessionHours },
     };
   }

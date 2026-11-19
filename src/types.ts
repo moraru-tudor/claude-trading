@@ -60,6 +60,8 @@ export interface Position {
   stopPct: number;
   marketCap: number;
   liquidityUsd: number;
+  pairAddress?: string;
+  lastPriceAt?: number;
 }
 
 export interface Trade {

@@ -9,6 +9,11 @@ export interface Market {
   snapshots(mints: string[]): Promise<Map<string, TokenSnapshot>>;
   safety(token: TokenSnapshot): Promise<SafetyReport>;
   solPriceUsd(): Promise<number>;
+  /** Fast price check for held coins (called every second). `snap` is included when the source returns full stats. */
+  priceTick(mints: string[]): Promise<Map<string, { price: number; snap?: TokenSnapshot }>>;
+  /** Keep a live swap-tick subscription on exactly these pools; `onTick(mint)` fires on every swap. */
+  syncTicks(pools: { mint: string; pair?: string }[], onTick: (mint: string) => void): void;
+  tickStats(): { ticks: number; lastTickAt: number; streams: number; error: string };
 }
 
 /** Shared call counter so the dashboard can show "N calls" per source. */

@@ -21,20 +21,24 @@ console.log(`
   Claude Trading Desk
   mode      ${config.mode.toUpperCase()}${modeNote}
   analyst   ${config.analyst === "claude" ? `Claude (${config.analystModel}, effort ${config.analystEffort})` : "rules (set ANTHROPIC_API_KEY to use Claude)"}
+  speed     prices every ${config.monitorIntervalMs} ms (${config.priceSource})${config.tickStream ? " + on every swap tick" : ""} · scan every ${config.scanIntervalSec} s
   bankroll  $${config.startUsd}   stop -${config.stopLossPct}%   size ${config.minPositionPct}-${config.maxPositionPct}%   max open ${config.maxOpenPositions}
   wallet    ${exec.address ?? `— (no wallet in ${config.mode} mode)`}`);
 
 startServer(desk);
 
-const loop = (fn: () => Promise<unknown>, sec: number) => {
+// Fixed-rate loops: the next run is timed from when this one STARTED, so a 1 s monitor really
+// checks once per second. Runs never overlap; a slow call only delays itself.
+const loop = (fn: () => Promise<unknown>, ms: number) => {
   const run = async () => {
+    const t0 = Date.now();
     await fn().catch((e) => console.error(e));
-    setTimeout(run, sec * 1000);
+    setTimeout(run, Math.max(0, ms - (Date.now() - t0)));
   };
   void run();
 };
-loop(() => desk.scanOnce(), config.scanIntervalSec);
-loop(() => desk.monitorOnce(), config.monitorIntervalSec);
+loop(() => desk.scanOnce(), config.scanIntervalSec * 1000);
+loop(() => desk.monitorOnce(), config.monitorIntervalMs);
 setInterval(() => desk.save(), 10_000).unref();
 
 const shutdown = () => {

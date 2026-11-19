@@ -1,4 +1,5 @@
 import { fetchJson } from "../util.js";
+import { limit } from "../ratelimit.js";
 import { countCall } from "./market.js";
 
 // Public endpoint, no key needed for the summary report.
@@ -15,6 +16,7 @@ export interface RugSummary {
 }
 
 export async function rugcheckSummary(mint: string): Promise<RugSummary> {
+  await limit("rugcheck");
   const s = await fetchJson<Summary>(`https://api.rugcheck.xyz/v1/tokens/${mint}/report/summary`);
   countCall("rugcheck");
   const risks = s.risks ?? [];

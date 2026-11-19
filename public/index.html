@@ -68,10 +68,10 @@
   .pulse { background: var(--green); animation: pulse 1.6s infinite; }
   @keyframes pulse { 50% { opacity: .35; } }
 
-  .src { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 8px; align-items: center; padding: 6px 0; font: 15px var(--mono); }
+  .src { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: center; padding: 6px 0; font: 15px var(--mono); }
   .src .nm { display: flex; gap: 10px; align-items: center; min-width: 0; }
   .src .nm span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .src .note { color: var(--mute); font-size: 12px; white-space: nowrap; }
+  .src .nm small { color: var(--mute); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .src .calls { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
 
   .agent { display: grid; grid-template-columns: 28px 84px minmax(0,1fr) auto; gap: 8px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); font: 13.5px var(--mono); }
@@ -241,7 +241,7 @@
     const pnl = s.equity - s.startUsd;
     $("pnl").textContent = `${usd(pnl, true)} · ${s.wins}W ${s.losses}L`;
     $("pnl").className = pnl >= 0 ? "g" : "r";
-    $("clock").textContent = hm(s.now);
+    $("clock").textContent = new Date(s.now).toLocaleTimeString([], { hour12: false });
 
     const ban = $("banner");
     const msg = s.paused ? `⏸ paused — ${s.pauseReason}` : s.sessionOver ? "session over — managing open positions only" : s.error ? `⚠ ${s.error}` : "";
@@ -252,9 +252,19 @@
     $("x0").textContent = hm(s.startedAt); $("x1").textContent = hm(s.sessionEnd);
 
     $("sources").innerHTML = s.sources.map((x) => `
-      <div class="src"><span class="nm"><span class="dot" style="background:${x.color}"></span><span>${esc(x.name)}</span></span>
-      <span class="note">${esc(x.note)}</span>
+      <div class="src"><span class="nm"><span class="dot" style="background:${x.color}"></span><span>${esc(x.name)}</span><small class="note">${esc(x.note)}</small></span>
       <span class="calls"><span class="dot" style="background:var(--green)"></span>${x.calls.toLocaleString("en-US")} calls</span></div>`).join("");
+
+    const sp = s.speed;
+    if (sp) {
+      const ago = (t) => !t ? "—" : (s.now - t) < 1000 ? "now" : ((s.now - t) / 1000).toFixed(1) + "s ago";
+      const every = sp.checkEveryMs >= 1000 ? (sp.checkEveryMs / 1000) + "s" : sp.checkEveryMs + "ms";
+      $("sources").innerHTML += `
+      <div class="src"><span class="nm"><span class="dot" style="background:var(--buy)"></span><span>price checks</span><small>every ${every} · ${esc(sp.priceSource)}</small></span>
+      <span class="calls"><span class="dot ${s.positions.length ? "pulse" : ""}"></span>${sp.checksPerMin}/min · ${sp.lastCheckMs}ms</span></div>
+      <div class="src"><span class="nm"><span class="dot" style="background:var(--buy)"></span><span>swap ticks</span><small>${sp.tickStream ? sp.streams + " pools live" : "off"}${sp.tickError ? " · " + esc(sp.tickError) : ""}</small></span>
+      <span class="calls"><span class="dot ${sp.lastTickAt && s.now - sp.lastTickAt < 2000 ? "pulse" : ""}"></span>${Number(sp.ticks).toLocaleString("en-US")} · ${ago(sp.lastTickAt)}</span></div>`;
+    }
 
     $("agents").innerHTML = AGENTS.map(([k, label, col]) => {
       const a = s.agents[k] || {};

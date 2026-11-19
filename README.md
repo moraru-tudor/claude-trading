@@ -20,6 +20,15 @@ A 5-agent Solana memecoin trading desk with a live phone dashboard. It is modell
 | **RISK** | Sizes each trade at 3–8% of equity, scaled by confidence. It caps size at `MAX_POSITION_USD` and 0.5% of pool liquidity. It allows at most 4 open positions, sets a −8% stop, and pauses the desk at the session loss limit. | local |
 | **EXECUTOR** | **paper**: realistic fills with fees and AMM price impact. **live**: Jupiter quote → swap transaction → signed with your bot wallet's key → sent to Solana. | Jupiter + Solana RPC |
 
+## Speed: per-second and per-tick checks
+
+- **Every second:** each open position is re-priced and checked against its stop-loss, take-profit and trailing stop (`MONITOR_INTERVAL_MS=1000`). The loop runs at a fixed rate and never overlaps itself.
+- **Every swap tick:** with `TICK_STREAM=1`, the desk subscribes to each held coin's pool over a Solana websocket. Every swap in that pool triggers an immediate re-check (at most 2 per second), so a crash is caught in well under a second instead of at the next poll.
+- **New coins:** the scanner runs every 5 seconds (`SCAN_INTERVAL_SEC=5`).
+- **Within limits:** a built-in rate limiter keeps the desk under each provider's limit (DexScreener 300/min, Jupiter free tier ~60/min, RugCheck). At 1 check/s + 2 tick checks/s + scanning it uses ~216 of DexScreener's 300 calls a minute. Getting blocked would blind the stop-losses, which is worse than being slower.
+- **Price lag:** a tick tells the desk *that* the pool moved, but the price it then reads from DexScreener can lag the chain by a second or two. Stops still fire, but exits in a fast dump can be worse than −8%. For truly on-chain tick prices you'd decode each pool's reserves; that's DEX-specific and not built yet.
+- **Dashboard:** the dashboard shows the live rate under **price checks** (checks/min and how long each took) and **swap ticks** (pools watched, total ticks, time since the last one).
+
 ## ⚠️ Read this first
 
 - **The video you may have seen is not evidence that this works.** "$81 → $2,745 overnight, 77% win rate" clips are marketing, and often lead to "bot" apps that drain your wallet. No honest bot can promise returns. Most memecoins go to zero. Expect to lose money in live mode, especially at first.

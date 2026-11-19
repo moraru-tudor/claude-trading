@@ -43,12 +43,22 @@ export const config = {
   maxAgeHours: num("MAX_AGE_HOURS", 72),
   minVolM5Usd: num("MIN_VOL_M5_USD", 2_000),
 
-  scanIntervalSec: num("SCAN_INTERVAL_SEC", 20),
-  monitorIntervalSec: num("MONITOR_INTERVAL_SEC", 8),
+  // How often the scanner looks for new coins (DexScreener's discovery feeds allow ~1 call/s).
+  scanIntervalSec: Math.max(2, num("SCAN_INTERVAL_SEC", 5)),
+  // How often open positions are re-priced and checked against stop / take-profit (ms). 1000 = every second.
+  monitorIntervalMs: Math.max(250, process.env.MONITOR_INTERVAL_SEC ? num("MONITOR_INTERVAL_SEC", 1) * 1000 : num("MONITOR_INTERVAL_MS", 1000)),
+  // Tick stream: watch each held coin's pool on Solana and re-check on every swap (sub-second reaction).
+  tickStream: str("TICK_STREAM", "1") === "1",
+  // Smallest gap between two tick-triggered checks (ms).
+  // 500 ms = at most 2 tick checks/s, which keeps 1/s polling + ticks + scanning under DexScreener's 300/min.
+  tickDebounceMs: Math.max(100, num("TICK_DEBOUNCE_MS", 500)),
+  // Per-second prices from: dexscreener (pool price) or jupiter (aggregated price API).
+  priceSource: str("PRICE_SOURCE", "dexscreener") as "dexscreener" | "jupiter",
   paperFeePct: num("PAPER_FEE_PCT", 0.5),
 
   walletSecret: str("WALLET_SECRET_KEY", ""),
   rpcUrl: str("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com"),
+  wsUrl: str("SOLANA_WS_URL", ""),
   jupiterBase: str("JUPITER_BASE_URL", "https://lite-api.jup.ag/swap/v1"),
   jupiterApiKey: str("JUPITER_API_KEY", ""),
   slippageBps: num("SLIPPAGE_BPS", 300),

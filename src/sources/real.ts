@@ -1,13 +1,39 @@
 import { config } from "../config.js";
 import type { SafetyReport, TokenSnapshot } from "../types.js";
 import { latestSolanaMints, solPriceUsd, tokenSnapshots } from "./dexscreener.js";
-import { roundTrip } from "./jupiter.js";
+import { prices as jupPrices, roundTrip } from "./jupiter.js";
+import { TickStream } from "./ticks.js";
 import type { Market } from "./market.js";
 import { rugcheckSummary } from "./rugcheck.js";
 
 export class RealMarket implements Market {
   readonly kind = "real" as const;
   private solCache = { px: 0, at: 0 };
+  private stream: TickStream | null = null;
+  private onTick: (mint: string) => void = () => {};
+
+  async priceTick(mints: string[]) {
+    const out = new Map<string, { price: number; snap?: TokenSnapshot }>();
+    if (!mints.length) return out;
+    if (config.priceSource === "jupiter") {
+      for (const [m, price] of await jupPrices(mints)) out.set(m, { price });
+      return out;
+    }
+    for (const [m, snap] of await tokenSnapshots(mints)) out.set(m, { price: snap.priceUsd, snap });
+    return out;
+  }
+
+  syncTicks(pools: { mint: string; pair?: string }[], onTick: (mint: string) => void) {
+    if (!config.tickStream) return;
+    this.onTick = onTick;
+    this.stream ??= new TickStream((m) => this.onTick(m));
+    this.stream.sync(pools);
+  }
+
+  tickStats() {
+    const s = this.stream;
+    return { ticks: s?.ticks ?? 0, lastTickAt: s?.lastTickAt ?? 0, streams: s?.size ?? 0, error: s?.error ?? "" };
+  }
 
   async discover(): Promise<TokenSnapshot[]> {
     const mints = await latestSolanaMints();
