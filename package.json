@@ -1,0 +1,30 @@
+{
+  "name": "claude-trading-desk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "5-agent Solana memecoin trading desk (Scanner, Safety, Analyst, Risk, Executor) with a live dashboard. Claude is the analyst; trades are signed by a dedicated wallet you can also open in Phantom.",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "demo": "MODE=demo tsx src/index.ts",
+    "paper": "MODE=paper tsx src/index.ts",
+    "live": "MODE=live tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.11.0",
+    "@solana/web3.js": "^1.99.0",
+    "bs58": "^6.0.0",
+    "dotenv": "^18.0.10",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
