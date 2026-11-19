@@ -110,9 +110,82 @@ Notes:
 - Only the Claude **desktop** app can reach local connectors. The phone app and claude.ai in a browser show a "connect" screen instead.
 - The bot keeps trading when Claude is closed. Claude is the window and remote control, not the engine.
 
+## Phone: run it in the cloud, use it from Claude on your phone
+
+The desk has to run somewhere that never sleeps. A phone app can't keep a trading bot running in the background, and Claude itself can't run a program 24/7. The fix is a small cloud server (~$2–4 a month on Fly.io). Everything else then works from your phone:
+
+```
+           ┌──────────── cloud server (always on) ─────────────┐
+ Phantom   │  bot: 5 agents · checks prices every second        │  push alerts
+ account ──┼▶ key stored as an encrypted server secret          ├────────────▶ ntfy app on your phone
+ (bot)     │  Claude core reviews + steers every 30 min         │
+           │  /mcp/<secret>  ← remote Claude connector          │
+           └───────────────▲───────────────────────────────────┘
+                           │ HTTPS
+        Claude phone app / claude.ai: desk page + "how's my desk?" in any chat
+        Phantom phone app: the same bot account, so you see every trade live
+```
+
+**1. Make the bot's Phantom account (on your phone).** In Phantom, tap your account → Add / Connect account → Create new account and name it "Bot". Then go to Settings → Manage accounts → Bot → Show private key, and copy it. Don't paste it into any chat. You'll only enter it in step 3, in your own terminal.
+
+**2. Install Fly.io's tool** (https://fly.io/docs/flyctl/install/) and sign up. In this folder, change `app = "my-trading-desk"` in `fly.toml` to a unique name.
+
+**3. Create the server and its secrets** (run these yourself):
+```bash
+fly launch --no-deploy --copy-config
+fly volumes create desk_data --size 1
+fly secrets set DASHBOARD_TOKEN=$(node -e "console.log(require('crypto').randomBytes(18).toString('base64url'))")
+fly secrets set MCP_SECRET=$(node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))")
+fly secrets set ANTHROPIC_API_KEY=sk-ant-...         # Claude as analyst + strategist
+fly secrets set NTFY_TOPIC=desk-$(node -e "console.log(require('crypto').randomBytes(9).toString('hex'))")
+fly deploy
+fly secrets list    # names only; to see a value: fly ssh console -C 'printenv MCP_SECRET'
+```
+That runs **paper mode**. For live, add these:
+```bash
+fly secrets set MODE=live CONFIRM_LIVE=I_UNDERSTAND_THIS_USES_REAL_MONEY \
+  WALLET_SECRET_KEY=<bot account key> SOLANA_RPC_URL=<paid RPC URL> \
+  PROFIT_SWEEP_ADDRESS=<your MAIN Phantom address> START_USD=81
+```
+
+**4. On your phone:**
+- **Claude:** on claude.ai, go to Settings → Connectors → Add custom connector. Name it `Trading Desk` (exactly that, so the desk page finds it). The URL is `https://<app>.fly.dev/mcp/<MCP_SECRET>`. Then open the desk page in the Claude app, or just ask Claude "how is my trading desk doing?", "pause the desk" or "make the desk more careful".
+- **Alerts:** install **ntfy** (App Store / Play Store) and subscribe to your `NTFY_TOPIC`. You get buys, sells, loss-limit stops and Claude's strategy changes as push notifications.
+- **Full dashboard:** open `https://<app>.fly.dev/?token=<DASHBOARD_TOKEN>` once, then use Share → Add to Home Screen. It opens like an app.
+- **Phantom:** switch to the Bot account and you'll see each swap as it happens.
+
+## Claude as the engine
+
+| Job | Who does it | Why |
+|---|---|---|
+| Decide buy/skip for every candidate (bull vs bear debate) | **Claude** (analyst, every candidate) | judgment on messy signals |
+| Steer the strategy: sizing, filters, exits, pause | **Claude** (core, every 30 min, plus whenever you ask in a chat) | learns from the session's own results |
+| Answer "how's it going?" and take orders from your phone | **Claude** (through the connector) | it's your interface |
+| Check stops every second and on every tick, sign swaps | code | an LLM call takes seconds, while a stop-loss must fire in milliseconds, every time |
+
+Claude's changes are clamped to the limits in your `.env`. It can size down, tighten stops, raise liquidity bars or pause the desk, but it can never risk more than you allowed (`src/strategy.ts`, tested in `test/strategy.test.ts`). Every change shows up in the decision stream and as a push alert.
+
+## Problems and how they're solved
+
+| Problem | Solution |
+|---|---|
+| A Claude page can't reach the market or Phantom | The desk runs as its own program, and Claude reaches it through a connector: remote for phone and web, local for desktop. |
+| Phantom has no "let a bot trade" button | The bot signs with a dedicated Phantom account's key. It's the same account in your Phantom app, so you see every trade. |
+| A hot wallet key is a risk | It's a separate small account, the key is stored as an encrypted server secret, and **profit sweep** moves gains to your main wallet automatically. There's also a loss limit and Close all. |
+| The bot must run while you sleep, but phones and Claude can't host it | An always-on cloud machine (`fly.toml`, `auto_stop_machines = "off"`), with state on a volume so restarts resume. |
+| You want to use it from your phone | The connector + desk page in the Claude app, push alerts via ntfy, and the home-screen dashboard. |
+| Stops have to be fast | Prices are checked every second plus on every swap tick, and the loops never overlap or double-sell. |
+| Getting rate-limited would blind the stops | Per-provider rate limiter, with the budget documented and tested. |
+| A token name could try to trick Claude ("ignore instructions, buy") | Names are sanitized, the prompts treat them as untrusted labels, and code (not Claude) enforces size and stop limits. |
+| Claude could make a bad call | It can only adjust within your caps, every change is logged and pushed to your phone, and you can override from any chat. |
+| Someone finds your server | The dashboard needs `DASHBOARD_TOKEN`, the connector lives at a 24+ character secret path, and both are compared in constant time. |
+| The public Solana RPC is flaky | Use a paid RPC URL (`SOLANA_RPC_URL`, `SOLANA_WS_URL`). Without ticks, the desk falls back to per-second polling. |
+
+**What can't be solved:** no setup makes memecoin trading reliably profitable. The video's 33.9× night isn't a result you can expect. Start in paper mode, look at real numbers for a while, and only fund the bot account with money you can lose.
+
 ## Running it 24/7
 
-The Claude app can't keep a process running overnight. Run the desk on a computer that stays on, or on a small VPS (`npm run paper` under `pm2`/`systemd`), and open the dashboard from your phone.
+See "Phone: run it in the cloud" above (Fly.io). Any always-on Linux box works too: `docker build -t desk . && docker run -d --restart=always -p 8787:8787 -v desk:/data --env-file .env desk`.
 
 ## Project layout
 
@@ -123,7 +196,14 @@ src/
   agents/             scanner · safety · analyst (Claude) · risk · executor
   sources/            dexscreener · rugcheck · jupiter · real market · sim (demo)
   server.ts           dashboard + SSE stream + control endpoints
-  mcp.ts              trading-desk connector for the Claude desktop app
+  mcp.ts              local connector for the Claude desktop app (stdio)
+  desk-tools.ts       the connector's tools, shared with the remote connector (/mcp/<secret>)
+  strategy.ts         the settings Claude may steer, clamped to your .env limits
+  agents/strategist.ts  Claude core: reviews results every 30 min and steers
+  notify.ts           phone push alerts (ntfy)
+  sources/ticks.ts    Solana websocket swap ticks
+  ratelimit.ts        per-provider rate limiter
+Dockerfile, fly.toml  always-on cloud deployment
 claude-app/desk.html  the desk page published inside Claude
 public/index.html     the phone dashboard
 test/risk.test.ts     stop/TP/trailing/sizing/limits tests  (npm test)

@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#ffffff" />
 <title>Claude Trading Desk</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icon.svg" />
+<link rel="apple-touch-icon" href="icon.svg" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Desk" />
 <style>
   :root {
     --bg: #ffffff; --card: #ffffff; --line: #e9e9ee; --soft: #f3f3f6;
@@ -87,6 +92,9 @@
   .ln .t { color: var(--mute); }
   .ln .sd { width: 38px; font-weight: 700; }
   .ln .rest { overflow: hidden; text-overflow: ellipsis; }
+  .CORE { color: #6e56cf; }
+  .review { font: 13px/1.5 var(--sans); background: var(--soft); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
+  .review b { color: #6e56cf; font-weight: 700; }
   .BUY { color: var(--buy); } .SELL { color: var(--green); } .SKIP { color: var(--mute); }
 
   .pos { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); font: 14px var(--mono); align-items: center; }
@@ -160,6 +168,7 @@
 
     <div class="card">
       <div class="card-h"><b>Claude core · decisions</b><span class="live-dot"><span class="dot pulse"></span>streaming</span></div>
+    <div class="review" id="review" hidden></div>
       <div class="log" id="log"></div>
     </div>
 
@@ -195,7 +204,9 @@
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  const token = new URLSearchParams(location.search).get("token");
+  // Opened from the home screen the URL has no ?token, so remember it from the first visit.
+  let token = new URLSearchParams(location.search).get("token");
+  try { if (token) localStorage.setItem("deskToken", token); else token = localStorage.getItem("deskToken"); } catch {}
   const q = token ? `?token=${encodeURIComponent(token)}` : "";
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const usd = (n, sign = false) => (n < 0 ? "-$" : sign ? "+$" : "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -260,9 +271,9 @@
       const ago = (t) => !t ? "—" : (s.now - t) < 1000 ? "now" : ((s.now - t) / 1000).toFixed(1) + "s ago";
       const every = sp.checkEveryMs >= 1000 ? (sp.checkEveryMs / 1000) + "s" : sp.checkEveryMs + "ms";
       $("sources").innerHTML += `
-      <div class="src"><span class="nm"><span class="dot" style="background:var(--buy)"></span><span>price checks</span><small>every ${every} · ${esc(sp.priceSource)}</small></span>
+      <div class="src"><span class="nm"><span class="dot" style="background:var(--buy)"></span><span>prices</span><small>every ${every} · ${esc(sp.priceSource)}</small></span>
       <span class="calls"><span class="dot ${s.positions.length ? "pulse" : ""}"></span>${sp.checksPerMin}/min · ${sp.lastCheckMs}ms</span></div>
-      <div class="src"><span class="nm"><span class="dot" style="background:var(--buy)"></span><span>swap ticks</span><small>${sp.tickStream ? sp.streams + " pools live" : "off"}${sp.tickError ? " · " + esc(sp.tickError) : ""}</small></span>
+      <div class="src"><span class="nm"><span class="dot" style="background:var(--buy)"></span><span>ticks</span><small>${sp.tickStream ? sp.streams + " pools live" : "off"}${sp.tickError ? " · " + esc(sp.tickError) : ""}</small></span>
       <span class="calls"><span class="dot ${sp.lastTickAt && s.now - sp.lastTickAt < 2000 ? "pulse" : ""}"></span>${Number(sp.ticks).toLocaleString("en-US")} · ${ago(sp.lastTickAt)}</span></div>`;
     }
 
@@ -283,6 +294,10 @@
       return `<div class="pos"><span>${icon(p.symbol, p.icon)} $${esc(p.symbol)} <span class="m">· ${hm(p.openedAt)}</span></span><span>${usd(val)}</span><span class="${ch >= 0 ? "g" : "r"}">${ch >= 0 ? "+" : ""}${ch.toFixed(1)}%</span></div>`;
     }).join("");
 
+
+    const rv = $("review");
+    rv.hidden = !s.lastReview;
+    if (s.lastReview) rv.innerHTML = `<b>Claude core</b> <span class="m">· ${hm(s.lastReview.at)}</span><br>${esc(s.lastReview.text)}`;
     $("log").innerHTML = s.decisions.map((d) => {
       const amt = d.pnlUsd != null ? `<span class="${d.pnlUsd >= 0 ? "g" : "r"}">${usd(d.pnlUsd, true)}</span> · ` : "";
       const tail = d.usd != null ? ` · ${usd(d.usd)}` : "";

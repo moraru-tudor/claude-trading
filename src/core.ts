@@ -6,7 +6,10 @@ import type { Executor } from "./agents/executor.js";
 import { exitSignal, sizeTrade } from "./agents/risk.js";
 import { Safety } from "./agents/safety.js";
 import { Scanner } from "./agents/scanner.js";
+import { reviewStrategy } from "./agents/strategist.js";
 import { config } from "./config.js";
+import { notify } from "./notify.js";
+import { applyStrategy, currentStrategy, describeChanges, type Strategy } from "./strategy.js";
 import { calls, type Market } from "./sources/market.js";
 import type { AgentName, AgentStatus, Decision, Position, TokenSnapshot, Trade } from "./types.js";
 import { fmtCompact, fmtUsd, uid } from "./util.js";
@@ -25,6 +28,9 @@ interface Persisted {
   coins: string[];
   paused: boolean;
   pauseReason: string;
+  strategy?: Partial<Strategy>;
+  sweptUsd?: number;
+  lastReview?: { at: number; text: string };
 }
 
 /**
@@ -55,6 +61,7 @@ export class Desk extends EventEmitter {
       risk: a("risk engine"), executor: a(exec.label === "live" ? "jupiter→solana" : "paper"),
     };
     this.s = this.load() ?? this.fresh();
+    if (this.s.strategy) applyStrategy(this.s.strategy); // keep Claude's earlier adjustments across restarts
     this.lastEquity = this.s.equity.at(-1)?.v ?? this.s.startUsd;
   }
 
@@ -83,7 +90,8 @@ export class Desk extends EventEmitter {
   get sessionEnd() { return this.s.startedAt + config.sessionHours * 3_600_000; }
   get sessionOver() { return Date.now() > this.sessionEnd; }
   positionsValue() { return this.s.positions.reduce((a, p) => a + p.qty * p.lastPrice, 0); }
-  equity() { return this.s.cashUsd + this.positionsValue(); }
+  /** Everything the session is worth, including profits already swept to your main wallet. */
+  equity() { return this.s.cashUsd + this.positionsValue() + (this.s.sweptUsd ?? 0); }
 
   private setAgent(n: AgentName, patch: Partial<AgentStatus>) {
     this.agents[n] = { ...this.agents[n], ...patch, updatedAt: Date.now() };
@@ -95,8 +103,70 @@ export class Desk extends EventEmitter {
   }
 
   setPaused(p: boolean, reason = "") {
+    if (this.s.paused === p) return;
     this.s.paused = p; this.s.pauseReason = p ? reason || "paused from dashboard" : "";
+    notify(p ? `⏸ Desk paused: ${this.s.pauseReason}` : "▶ Desk resumed", { tags: p ? "pause_button" : "arrow_forward" });
     this.save();
+  }
+
+  // ───────────────────────── Claude core (strategy) ─────────────────────────
+  strategy() {
+    return { strategy: currentStrategy(), lastReview: this.s.lastReview ?? null };
+  }
+
+  /** Used by the strategist and by Claude in a chat (set_strategy tool). Always clamped. */
+  setStrategy(patch: Partial<Record<string, unknown>>, by: string) {
+    const changes = applyStrategy(patch);
+    if (changes.length) {
+      this.s.strategy = currentStrategy();
+      const text = `${by}: ${describeChanges(changes)}`;
+      this.decide({ side: "CORE", symbol: "DESK", text });
+      notify(`🧠 ${text}`, { tags: "brain" });
+      this.save();
+    }
+    return changes;
+  }
+
+  private reviewing = false;
+  async reviewOnce() {
+    if (config.analyst !== "claude" || this.reviewing) return;
+    this.reviewing = true;
+    try {
+      const plan = await reviewStrategy({
+        equityUsd: this.equity(), startUsd: this.s.startUsd, minutesIn: (Date.now() - this.s.startedAt) / 60_000,
+        paused: this.s.paused, trades: this.s.trades, decisions: this.s.decisions, openPositions: this.s.positions.length,
+      });
+      const changes = this.setStrategy(plan.changes as Record<string, unknown>, "Claude");
+      if (plan.pause_new_entries) this.setPaused(true, `Claude: ${plan.reason}`);
+      const text = changes.length || plan.pause_new_entries ? plan.reason : `no change · ${plan.reason}`;
+      this.s.lastReview = { at: Date.now(), text: `${plan.assessment} ${text}`.trim() };
+      if (!changes.length) this.decide({ side: "CORE", symbol: "DESK", text: `review: ${text}` });
+      this.save();
+    } catch (e) {
+      console.error("[strategist]", (e as Error).message);
+    } finally {
+      this.reviewing = false;
+    }
+  }
+
+  // ───────────────────────── profit sweep (live) ─────────────────────────
+  async sweepOnce() {
+    if (!config.profitSweepAddress || !this.exec.sweep) return;
+    const excess = this.equity() - this.s.startUsd - (this.s.sweptUsd ?? 0);
+    if (excess < config.sweepStepUsd) return;
+    const amount = Math.min(excess, this.s.cashUsd - 1); // only idle cash, never position money
+    if (amount < config.sweepStepUsd) return;
+    try {
+      const px = this.solPx || (await this.market.solPriceUsd());
+      const sig = await this.exec.sweep(amount, px, config.profitSweepAddress);
+      this.s.sweptUsd = (this.s.sweptUsd ?? 0) + amount;
+      this.s.cashUsd -= amount;
+      this.decide({ side: "CORE", symbol: "SOL", text: `swept ${fmtUsd(amount)} profit to your main wallet · ${sig.slice(0, 8)}…` });
+      notify(`💸 Swept ${fmtUsd(amount)} profit to your main wallet`, { tags: "moneybag" });
+      this.save();
+    } catch (e) {
+      console.error("[sweep]", (e as Error).message);
+    }
   }
 
   // ───────────────────────── entry pipeline ─────────────────────────
@@ -149,7 +219,7 @@ export class Desk extends EventEmitter {
     });
     this.setAgent("risk", { text: r.allow ? `size ${r.sizePct.toFixed(1)}% · stop -${r.stopPct}%` : r.reason, symbol: t.symbol, icon: t.icon, ok: r.allow });
     if (!r.allow) {
-      if (/loss limit/.test(r.reason)) this.setPaused(true, r.reason);
+      if (/loss limit/.test(r.reason)) { this.setPaused(true, r.reason); notify(`🛑 Loss limit hit: ${r.reason}`, { priority: 5, tags: "rotating_light" }); }
       this.decide({ side: "SKIP", symbol: t.symbol, icon: t.icon, text: `risk: ${r.reason}` });
       return;
     }
@@ -169,6 +239,7 @@ export class Desk extends EventEmitter {
       this.s.trades.push({ id: uid(), ts: Date.now(), side: "BUY", mint: t.mint, symbol: t.symbol, icon: t.icon, usd: fill.usd, reason, txSig: fill.txSig });
       this.decide({ side: "BUY", symbol: t.symbol, icon: t.icon, text: reason, usd: fill.usd });
       this.setAgent("executor", { text: `BUY $${t.symbol} ${fmtUsd(fill.usd)}`, symbol: t.symbol, icon: t.icon, ok: true });
+      notify(`BUY $${t.symbol} ${fmtUsd(fill.usd)} · mcap ${fmtCompact(t.marketCap)}`, { title: "Bought", tags: "green_circle", priority: 2 });
       this.emit("toast", { kind: "buy", symbol: t.symbol, icon: t.icon, line: `mcap ${fmtCompact(t.marketCap)} · ${fmtUsd(fill.usd)} · ${this.signedBy()}` });
       this.save();
     } catch (e) {
@@ -258,6 +329,7 @@ export class Desk extends EventEmitter {
       this.s.trades.push({ id: uid(), ts: Date.now(), side: "SELL", mint: p.mint, symbol: p.symbol, icon: p.icon, usd: fill.usd, pnlUsd: pnl, reason: why, txSig: fill.txSig });
       this.decide({ side: "SELL", symbol: p.symbol, icon: p.icon, text: `${why} · ${this.signedBy()}`, pnlUsd: pnl });
       this.setAgent("executor", { text: `SELL $${p.symbol} ${pnl >= 0 ? "+" : ""}${fmtUsd(pnl)}`, symbol: p.symbol, icon: p.icon, ok: pnl >= 0 });
+      notify(`SELL $${p.symbol} ${pnl >= 0 ? "+" : ""}${fmtUsd(pnl)} · ${why} · equity ${fmtUsd(this.equity())}`, { title: pnl >= 0 ? "Sold in profit" : "Sold at a loss", tags: pnl >= 0 ? "white_check_mark" : "small_red_triangle_down" });
       this.emit("toast", { kind: "sell", symbol: p.symbol, icon: p.icon, pnl, line: `mcap ${fmtCompact(p.marketCap)} · ${why} · ${this.signedBy()}` });
       this.save();
     } catch (e) {
@@ -313,6 +385,9 @@ export class Desk extends EventEmitter {
           tickStream: config.tickStream, ticks: tk.ticks, lastTickAt: tk.lastTickAt, streams: tk.streams, tickError: tk.error,
         };
       })(),
+      strategy: currentStrategy(),
+      lastReview: this.s.lastReview ?? null,
+      sweptUsd: this.s.sweptUsd ?? 0,
       config: { stopLossPct: config.stopLossPct, maxPositionPct: config.maxPositionPct, sessionHours: config.sessionHours },
     };
   }

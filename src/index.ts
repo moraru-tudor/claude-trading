@@ -4,6 +4,7 @@ import { Desk } from "./core.js";
 import type { Market } from "./sources/market.js";
 import { RealMarket } from "./sources/real.js";
 import { SimMarket } from "./sources/sim.js";
+import { notify } from "./notify.js";
 import { startServer } from "./server.js";
 
 validateConfig(config);
@@ -40,6 +41,10 @@ const loop = (fn: () => Promise<unknown>, ms: number) => {
 loop(() => desk.scanOnce(), config.scanIntervalSec * 1000);
 loop(() => desk.monitorOnce(), config.monitorIntervalMs);
 setInterval(() => desk.save(), 10_000).unref();
+if (config.analyst === "claude" && config.strategistIntervalMin > 0)
+  setInterval(() => void desk.reviewOnce(), config.strategistIntervalMin * 60_000).unref();
+if (config.mode === "live" && config.profitSweepAddress) loop(() => desk.sweepOnce(), 60_000);
+notify(`Desk started · ${config.mode.toUpperCase()} · $${config.startUsd} in`, { tags: "rocket" });
 
 const shutdown = () => {
   desk.save();

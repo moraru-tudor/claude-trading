@@ -79,7 +79,7 @@ export interface Trade {
 
 export interface Decision {
   ts: number;
-  side: "BUY" | "SELL" | "SKIP";
+  side: "BUY" | "SELL" | "SKIP" | "CORE";
   symbol: string;
   icon?: string;
   text: string;

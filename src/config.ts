@@ -65,6 +65,21 @@ export const config = {
   maxPriorityFeeLamports: num("MAX_PRIORITY_FEE_LAMPORTS", 1_000_000),
   solFeeReserve: num("SOL_FEE_RESERVE", 0.02),
 
+  // Claude core: how often Claude reviews results and steers the strategy (minutes, 0 = off)
+  strategistIntervalMin: num("STRATEGIST_INTERVAL_MIN", 30),
+
+  // Phone push notifications via ntfy (install the ntfy app, subscribe to this topic). Empty = off.
+  ntfyTopic: str("NTFY_TOPIC", ""),
+  ntfyServer: str("NTFY_SERVER", "https://ntfy.sh"),
+
+  // Live only: move profits to your main wallet (e.g. your main Phantom address) whenever the bot is
+  // this many USD above what you put in. Keeps the hot wallet small. Empty address = off.
+  profitSweepAddress: str("PROFIT_SWEEP_ADDRESS", ""),
+  sweepStepUsd: num("SWEEP_STEP_USD", 25),
+
+  // Remote connector for claude.ai / the Claude phone app: served at /mcp/<MCP_SECRET>. Empty = off.
+  mcpSecret: str("MCP_SECRET", ""),
+
   port: num("PORT", 8787),
   host: str("HOST", "127.0.0.1"),
   dashboardToken: str("DASHBOARD_TOKEN", ""),
@@ -82,6 +97,7 @@ export function validateConfig(c: Config) {
   }
   if (c.minPositionPct > c.maxPositionPct) throw new Error("MIN_POSITION_PCT > MAX_POSITION_PCT");
   if (c.stopLossPct <= 0 || c.stopLossPct >= 100) throw new Error("STOP_LOSS_PCT must be between 0 and 100");
+  if (c.mcpSecret && c.mcpSecret.length < 24) throw new Error("MCP_SECRET must be at least 24 random characters (it is the connector's password)");
   if (c.host !== "127.0.0.1" && c.host !== "localhost" && !c.dashboardToken)
     throw new Error("Set DASHBOARD_TOKEN when exposing the dashboard beyond localhost (HOST)");
 }

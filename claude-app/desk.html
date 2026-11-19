@@ -92,6 +92,9 @@
   .ln .t { color: var(--mute); }
   .ln .sd { width: 38px; font-weight: 700; flex: none; }
   .ln .rest { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .CORE { color: #6e56cf; }
+  .review { font: 13px/1.5 var(--sans); background: var(--soft); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
+  .review b { color: #6e56cf; font-weight: 700; }
   .BUY { color: var(--buy); } .SELL { color: var(--green); } .SKIP { color: var(--mute); }
   .empty { color: var(--mute); font: 13.5px var(--mono); padding: 6px 0; }
 
@@ -156,9 +159,10 @@
     <h2 id="setupTitle">Connect this page to your desk</h2>
     <p id="setupWhy" class="why"></p>
     <ol id="setupSteps">
-      <li>On your computer, in the <code>claude-trading</code> folder, start the bot: <code>npm run paper</code> (or <code>npm run live</code>).</li>
-      <li>In the Claude desktop app, add the <code>trading-desk</code> local server to <code>claude_desktop_config.json</code> (the README has the exact lines) and restart the app.</li>
-      <li>Open this page in the Claude desktop app and allow <b>trading-desk</b> when asked.</li>
+      <li>Run the desk on your cloud server (or computer): <code>npm run paper</code>. The README's "Phone" section deploys it in a few commands.</li>
+      <li><b>Phone and web:</b> in claude.ai go to Settings → Connectors → Add custom connector. Name it <code>Trading Desk</code> and use the URL <code>https://your-desk/mcp/&lt;MCP_SECRET&gt;</code>.</li>
+      <li><b>Desktop only, no server:</b> add the <code>trading-desk</code> local server to <code>claude_desktop_config.json</code> instead.</li>
+      <li>Open this page and choose <b>Allow</b> when Claude asks.</li>
     </ol>
     <p class="why">Your Phantom key stays in the bot's <code>.env</code> on your computer. This page only reads the numbers and can pause the desk.</p>
     <button class="btn dark" id="retryBtn" style="margin-top:10px" hidden>Try again</button>
@@ -183,6 +187,7 @@
 
   <div class="card">
     <div class="card-h"><b>Claude core · decisions</b><span class="live-dot off" id="streamWrap"><span class="dot" id="streamDot"></span>streaming</span></div>
+    <div class="review" id="review" hidden></div>
     <div class="log" id="log"><div class="empty">decisions stream here: every buy, sell and skip, with the reason</div></div>
   </div>
 
@@ -218,7 +223,10 @@
 
 <script>
 (() => {
-  const SERVER = "host:trading-desk";
+  // "Trading Desk" = the remote connector you add in claude.ai (works on the phone app and the web);
+  // "host:trading-desk" = the local server in the Claude desktop app. The first one that answers wins.
+  const SERVERS = ["Trading Desk", "host:trading-desk"];
+  let SERVER = SERVERS[0];
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const usd = (n, sign = false) => (n < 0 ? "-$" : sign ? "+$" : "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -262,7 +270,7 @@
   function handleError(err) {
     const code = err?.code;
     if (code === "server_not_connected" || code === "server_not_found" || code === "not_granted" || code === "capability_disabled" || code === "capability_removed")
-      return showSetup("Open this in the Claude desktop app", "This page reads your desk through the trading-desk connector on your computer. It can't reach it from here: either this isn't the Claude desktop app, or the connector isn't set up yet.", false);
+      return showSetup("Connect your desk to Claude", "This page reads your desk through a connector. None is reachable here yet: add the Trading Desk connector in claude.ai (works on your phone), or use the trading-desk local server in the Claude desktop app.", true);
     if (code === "not_in_manifest" || code === "approval_required" || code === "consent_required")
       return showSetup("Allow the trading-desk connector", "This page needs your permission to read the desk. Tap Try again and choose Allow.", true);
     if (code === "tool_error")
@@ -292,7 +300,7 @@
     modeEl.className = "mode " + s.mode;
     modeEl.textContent = s.mode === "demo" ? "DEMO · simulated, not real" : s.mode === "paper" ? "PAPER · real prices, fake money" : "LIVE · real money";
     const mins = Math.floor((s.now - s.startedAt) / 60000);
-    const who = s.wallet ? `phantom ${s.wallet.slice(0, 4)}…${s.wallet.slice(-4)}` : `${s.mode} wallet`;
+    const who = (s.wallet ? `phantom ${s.wallet.slice(0, 4)}…${s.wallet.slice(-4)}` : `${s.mode} wallet`) + (SERVER.startsWith("host:") ? " · desktop" : " · cloud");
     $("meta").textContent = `${who} · 3 sources · 5 agents · ${Math.floor(mins / 60)}h ${mins % 60}m in`;
 
     const [w, c] = s.equity.toFixed(2).split(".");
@@ -324,9 +332,9 @@
       const ago = (t) => !t ? "—" : (s.now - t) < 1000 ? "now" : ((s.now - t) / 1000).toFixed(1) + "s ago";
       const every = sp.checkEveryMs >= 1000 ? (sp.checkEveryMs / 1000) + "s" : sp.checkEveryMs + "ms";
       $("sources").innerHTML += `
-      <div class="src"><span class="nm"><span class="dot" style="background:var(--buy)"></span><span>price checks</span><small>every ${every} · ${esc(sp.priceSource)}</small></span>
+      <div class="src"><span class="nm"><span class="dot" style="background:var(--buy)"></span><span>prices</span><small>every ${every} · ${esc(sp.priceSource)}</small></span>
       <span class="calls"><span class="dot ${s.positions.length ? "pulse" : ""}"></span>${sp.checksPerMin}/min · ${sp.lastCheckMs}ms</span></div>
-      <div class="src"><span class="nm"><span class="dot" style="background:var(--buy)"></span><span>swap ticks</span><small>${sp.tickStream ? sp.streams + " pools live" : "off"}${sp.tickError ? " · " + esc(sp.tickError) : ""}</small></span>
+      <div class="src"><span class="nm"><span class="dot" style="background:var(--buy)"></span><span>ticks</span><small>${sp.tickStream ? sp.streams + " pools live" : "off"}${sp.tickError ? " · " + esc(sp.tickError) : ""}</small></span>
       <span class="calls"><span class="dot ${sp.lastTickAt && s.now - sp.lastTickAt < 2000 ? "pulse" : ""}"></span>${Number(sp.ticks).toLocaleString("en-US")} · ${ago(sp.lastTickAt)}</span></div>`;
     }
 
@@ -350,6 +358,10 @@
       return `<div class="pos"><span>${icon(p.symbol)} $${esc(p.symbol)} <span class="m">· ${hm(p.openedAt)}</span></span><span>${usd(val)}</span><span class="${ch >= 0 ? "g" : "r"}">${ch >= 0 ? "+" : ""}${ch.toFixed(1)}%</span></div>`;
     }).join("");
 
+
+    const rv = $("review");
+    rv.hidden = !s.lastReview;
+    if (s.lastReview) rv.innerHTML = `<b>Claude core</b> <span class="m">· ${hm(s.lastReview.at)}</span><br>${esc(s.lastReview.text)}`;
     $("log").innerHTML = s.decisions.map((d) => {
       const amt = d.pnlUsd != null ? `<span class="${d.pnlUsd >= 0 ? "g" : "r"}">${usd(d.pnlUsd, true)}</span> · ` : "";
       const tail = d.usd != null ? ` · ${usd(d.usd)}` : "";
@@ -457,16 +469,27 @@
 
   // First read is a direct call: it is the one that asks for permission (a watch never asks).
   async function connect() {
-    try {
-      onState((await mcp.callTool(SERVER, "get_desk_state", null, { cache: false })).payload);
-      startWatch();
-    } catch (e) { handleError(e); }
+    let lastErr = null;
+    for (const name of SERVERS) {
+      try {
+        const r = await mcp.callTool(name, "get_desk_state", null, { cache: false });
+        SERVER = name;
+        onState(r.payload);
+        startWatch();
+        return;
+      } catch (e) {
+        lastErr = e;
+        // try the other route only when this one simply isn't set up here
+        if (!["server_not_connected", "server_not_found", "selection_required"].includes(e?.code)) break;
+      }
+    }
+    handleError(lastErr);
   }
   $("retryBtn").onclick = connect;
 
   (async () => {
     mcp = window.claude ? await window.claude.use("mcp") : null;
-    if (!mcp) return showSetup("Open this in the Claude desktop app", "This page gets live numbers from the trading-desk connector, which only the Claude desktop app can reach.", false);
+    if (!mcp) return showSetup("Open this page in Claude", "Live numbers come through your Trading Desk connector, which this view can't use. Open the page in the Claude app or on claude.ai.", false);
     await connect();
     // The watch polls every 30 s at most; nudge it every 2 s while the page is visible so prices stay live.
     setInterval(() => { if (connected && !document.hidden) mcp.invalidate(SERVER, "get_desk_state").catch(() => {}); }, 2000);

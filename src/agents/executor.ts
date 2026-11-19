@@ -1,4 +1,4 @@
-import { Connection, Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, sendAndConfirmTransaction, SystemProgram, Transaction, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { config } from "../config.js";
 import { buildSwap, quote, SOL_MINT } from "../sources/jupiter.js";
@@ -17,6 +17,8 @@ export interface Executor {
   sell(p: Position, t: TokenSnapshot | undefined, solPx: number): Promise<FillResult>;
   /** live: real SOL balance in USD; paper: undefined (core tracks cash itself) */
   cashUsd?(solPx: number): Promise<number>;
+  /** live: send `usd` worth of SOL to `to`; returns the signature */
+  sweep?(usd: number, solPx: number, to: string): Promise<string>;
   address?: string;
 }
 
@@ -81,6 +83,16 @@ export class LiveExecutor implements Executor {
     const conf = await this.conn.confirmTransaction({ signature: sig, ...bh }, "confirmed");
     if (conf.value.err) throw new Error(`tx failed ${sig}: ${JSON.stringify(conf.value.err)}`);
     return sig;
+  }
+
+  async sweep(usd: number, solPx: number, to: string): Promise<string> {
+    const dest = new PublicKey(to);
+    const lamports = Math.floor((usd / solPx) * 1e9);
+    const balance = await this.conn.getBalance(this.kp.publicKey);
+    if (balance - lamports < config.solFeeReserve * 1e9) throw new Error("sweep would eat the fee reserve");
+    countCall("solana");
+    const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: this.kp.publicKey, toPubkey: dest, lamports }));
+    return sendAndConfirmTransaction(this.conn, tx, [this.kp], { commitment: "confirmed" });
   }
 
   async buy(t: TokenSnapshot, usd: number, solPx: number): Promise<FillResult> {
